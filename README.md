@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # 酒店服务与退票 Reasoning Agent
 
 针对用户的酒店服务智能助手，专注于处理酒店换房/退租和退票等需求，支持图像识别和多渠道交互。集成高德地图MCP服务获取酒店信息，使用通义千问API分析用户输入，并通过WebSocket实现实时反馈。
@@ -145,6 +144,3 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 - [ ] 酒店信息数据库扩展
 - [ ] 对话状态管理优化
 - [ ] 用户界面开发
-=======
-# Customer_Agent_Overall
->>>>>>> 5c430baffbc720c666a30e28b47aef8a155e496b
