@@ -137,8 +137,19 @@ class SummaryAgent:
         }
         
         # 生成prompt
-        prompt = self.refund_prompt_template.format(**params)
-        result = await self.qwen_service.analyze_text("", prompt)
+        prompt_template = self.refund_prompt_template.format(**params)
+        
+        # 将退票信息转换为文本格式作为输入
+        text_input = f"退票请求信息:\n"
+        text_input += f"酒店名称: {params['hotel_name']}\n"
+        text_input += f"订单号: {params['order_id']}\n"
+        text_input += f"入住日期: {params['check_in_date']}\n"
+        text_input += f"客人姓名: {params['guest_name']}\n"
+        text_input += f"酒店电话: {params['hotel_tel']}\n"
+        text_input += f"退款政策: {params['refund_policy']}\n"
+        
+        # 调用API生成prompt
+        result = await self.qwen_service.analyze_text(text_input, prompt_template)
         refund_prompt = result.get("raw_response", "")
         
         return refund_prompt.strip() if refund_prompt else None
@@ -156,6 +167,9 @@ class SummaryAgent:
         
         # 将prompt存储到元数据中
         conversation.metadata["refund_prompt"] = refund_prompt
+        
+        # 记录日志
+        print(f"生成的退票prompt: {refund_prompt}")
         
         # 保存到MongoDB
         self.db_service.save_conversation(conversation)
