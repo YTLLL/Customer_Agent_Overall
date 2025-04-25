@@ -1,2 +1,5 @@
 .env
 poetry.lock
+.DS_Store
+agent/.DS_Store
+agent/app/.DS_Store
