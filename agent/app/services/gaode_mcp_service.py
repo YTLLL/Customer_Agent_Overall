@@ -157,21 +157,40 @@ class GaodeMCPService:
                                 
                                 # 如果找到多个匹配结果，返回选项列表
                                 elif len(data["pois"]) > 1:
-                                    hotels_list = []
-                                    for poi in data["pois"][:5]:  # 最多返回前5个结果
+                                    # 将所有酒店选项保存下来
+                                    all_hotels_list = []
+                                    display_hotels_list = []  # 首次显示的酒店列表
+                                    
+                                    # 首次显示的数量
+                                    initial_display_count = 20
+                                    total_hotels = len(data["pois"])
+                                    
+                                    # 处理所有酒店选项
+                                    for i, poi in enumerate(data["pois"]):
                                         hotel_option = {
                                             "name": poi.get("name", ""),
                                             "formatted_address": poi.get("address", ""),
                                             "district": poi.get("adname", ""),  # 所在区域
-                                            "id": poi.get("id", "")  # 用于后续查询详情
+                                            "id": poi.get("id", ""),  # 用于后续查询详情
+                                            "tel": poi.get("tel", ""),  # 添加电话信息
+                                            "index": i  # 添加原始索引信息
                                         }
-                                        hotels_list.append(hotel_option)
+                                        all_hotels_list.append(hotel_option)
+                                        
+                                        # 将前20个添加到显示列表
+                                        if i < initial_display_count:
+                                            display_hotels_list.append(hotel_option)
                                     
-                                    logger.info(f"找到多个匹配酒店，返回选项列表: {hotels_list}")
+                                    logger.info(f"找到{total_hotels}个匹配酒店，首次显示{len(display_hotels_list)}个")
+                                    
+                                    # 返回结果
                                     return {
                                         "multiple_options": True,
-                                        "hotels": hotels_list,
-                                        "message": f"找到多家'{hotel_name}'，请选择具体是哪一家"
+                                        "hotels": display_hotels_list,  # 首次显示的酒店
+                                        "all_hotels": all_hotels_list,  # 所有酒店
+                                        "total_hotels": total_hotels,  # 总数量
+                                        "has_more": total_hotels > initial_display_count,  # 是否还有更多
+                                        "message": f"找到{total_hotels}家与'{hotel_name}'匹配的酒店，以下是前{initial_display_count}家，请选择具体是哪一家"
                                     }
                                 else:
                                     logger.warning(f"未找到酒店: {hotel_name}")
