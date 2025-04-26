@@ -306,19 +306,54 @@ class ReasoningGraph:
             if not state.get("is_refund_request", False):
                 return state
             
-            # 检查退票信息是否完整
-            refund_info = state["conversation"].metadata.get("refund_info", {})
-            required_fields = ["hotel_name", "order_id", "check_in_date", "guest_name"]
-            is_refund_complete = all(field in refund_info for field in required_fields)
+            # 调用高德MCP服务分析退票请求
+            user_message = state["user_message"]
+            analysis_result = await gaode_mcp_service.analyze_refund_request(user_message)
+            
+            # 获取提取的信息
+            extracted_info = analysis_result.get("extracted_info", {})
+            missing_fields = analysis_result.get("missing_fields", [])
+            is_complete = analysis_result.get("is_complete", False)
+            hotel_info = analysis_result.get("hotel_info", {})
+            
+            # 将提取的信息添加到conversation的元数据中
+            if "refund_info" not in state["conversation"].metadata:
+                state["conversation"].metadata["refund_info"] = {}
+            
+            # 更新refund_info
+            refund_info = state["conversation"].metadata["refund_info"]
+            for field, value in extracted_info.items():
+                if value and value != "缺失":
+                    refund_info[field] = value
+            
+            # 添加酒店信息
+            if hotel_info:
+                refund_info["hotel_info"] = hotel_info
             
             # 更新状态
-            state["is_refund_complete"] = is_refund_complete
+            state["is_refund_complete"] = is_complete
+            state["missing_fields"] = missing_fields
             
             # 如果信息不完整，生成缺失信息提示
-            if not is_refund_complete:
-                missing_info = [field for field in required_fields if field not in refund_info]
-                prompt = f"为了帮助您退票，我们需要以下信息：{', '.join(missing_info)}。请提供这些信息，以便我们继续处理您的退票请求。"
+            if not is_complete:
+                # 字段名称映射
+                field_name_map = {
+                    "hotel_name": "酒店名称",
+                    "order_id": "订单号",
+                    "check_in_date": "入住日期",
+                    "guest_name": "客人姓名"
+                }
+                
+                # 将字段名称转换为中文
+                missing_fields_zh = [field_name_map.get(field, field) for field in missing_fields]
+                missing_fields_str = ", ".join(missing_fields_zh)
+                
+                prompt = f"为了帮助您退票，我们需要以下信息：{missing_fields_str}。请提供这些信息，以便我们继续处理您的退票请求。"
                 state["missing_info_prompt"] = prompt
+            
+            # 打印调试信息
+            print(f"退票信息分析结果: {analysis_result}")
+            print(f"更新后的退票信息: {refund_info}")
             
             return state
         except Exception as e:
