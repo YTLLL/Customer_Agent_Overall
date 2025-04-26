@@ -79,24 +79,103 @@ class GaodeMCPService:
             
             logger.info(f"正在搜索酒店: {hotel_name}")
             
-            # 在实际项目中，这里应该是调用高德地图MCP的代码
-            # 需要实现与高德地图API的集成
-            # 此处不进行模拟测试，实际调用应该在正式环境中进行
+            # 调用高德地图API搜索POI信息
+            try:
+                # 构建API请求参数
+                search_params = {
+                    "keywords": hotel_name,
+                    "types": "酒店",  # 限制搜索类型为酒店
+                    "city": "全国",  # 可以根据需要限制城市
+                    "output": "json",
+                    "key": os.getenv("GAODE_API_KEY", "")
+                }
+                
+                # 构建API请求URL
+                api_url = "https://restapi.amap.com/v3/place/text?" + "&".join([f"{k}={v}" for k, v in search_params.items()])
+                logger.info(f"高德API请求URL: {api_url}")
+                
+                # 创建HTTP客户端会话
+                import aiohttp
+                async with aiohttp.ClientSession() as session:
+                    logger.info("开始发送API请求...")
+                    async with session.get(api_url) as response:
+                        logger.info(f"API响应状态码: {response.status}")
+                        if response.status == 200:
+                            data = await response.json()
+                            logger.info(f"API响应数据: {data}")
+                            
+                            if data.get("status") == "1" and data.get("pois") and len(data["pois"]) > 0:
+                                logger.info(f"找到匹配的POI数量: {len(data['pois'])}")
+                                
+                                # 如果只找到一个匹配结果，直接返回详细信息
+                                if len(data["pois"]) == 1:
+                                    poi = data["pois"][0]
+                                    logger.info(f"选择的唯一POI信息: {poi}")
+                                    
+                                    # 提取酒店信息
+                                    hotel_info = {
+                                        "name": poi.get("name", hotel_name),
+                                        "formatted_address": poi.get("address", ""),
+                                        "tel": poi.get("tel", ""),
+                                        "location": poi.get("location", ""),  # 经纬度信息
+                                        "type": poi.get("type", ""),  # 酒店类型
+                                        "city": poi.get("cityname", ""),  # 所在城市
+                                        "district": poi.get("adname", ""),  # 所在区域
+                                        "business_area": poi.get("business_area", ""),  # 所在商圈
+                                        "policies": {
+                                            "check_in": "14:00后",  # 默认值，实际应从API获取
+                                            "check_out": "12:00前",  # 默认值，实际应从API获取
+                                            "cancellation": "预订成功后，如需取消，请提前与酒店联系",
+                                            "refund": "入住前24小时取消预订可全额退款，24小时内取消预订将收取一晚房费。"
+                                        }
+                                    }
+                                    
+                                    logger.info(f"成功获取唯一酒店信息: {hotel_name}")
+                                    return hotel_info
+                                
+                                # 如果找到多个匹配结果，返回选项列表
+                                elif len(data["pois"]) > 1:
+                                    hotels_list = []
+                                    for poi in data["pois"][:5]:  # 最多返回前5个结果
+                                        hotel_option = {
+                                            "name": poi.get("name", ""),
+                                            "formatted_address": poi.get("address", ""),
+                                            "district": poi.get("adname", ""),  # 所在区域
+                                            "id": poi.get("id", "")  # 用于后续查询详情
+                                        }
+                                        hotels_list.append(hotel_option)
+                                    
+                                    logger.info(f"找到多个匹配酒店，返回选项列表: {hotels_list}")
+                                    return {
+                                        "multiple_options": True,
+                                        "hotels": hotels_list,
+                                        "message": f"找到多家'{hotel_name}'，请选择具体是哪一家"
+                                    }
+                                else:
+                                    logger.warning(f"未找到酒店: {hotel_name}")
+                            else:
+                                logger.warning(f"未找到酒店: {hotel_name}")
+                        else:
+                            logger.error(f"API请求失败，状态码: {response.status}")
+            except Exception as api_error:
+                logger.error(f"调用高德地图API失败: {str(api_error)}")
             
-            # 返回酒店信息结构，实际应用中应从高德地图API获取
+            # 如果API调用失败或未找到结果，返回基本信息
+            logger.warning(f"无法获取酒店真实信息，将使用基本信息: {hotel_name}")
+            
+            # 返回基本信息，不包含虚假的联系电话
             hotel_info = {
                 "name": hotel_name,
-                "formatted_address": "",  # 实际应用中从高德地图API获取
-                "tel": "",  # 实际应用中从高德地图API获取
+                "formatted_address": "暂无地址信息",
+                "tel": "请咨询酒店前台或客服中心",  # 不返回虚假电话
+                "api_call_failed": True,  # 标记API调用失败
                 "policies": {
-                    "check_out": "",
-                    "cancellation": "",
-                    "refund": ""
+                    "check_in": "通常为14:00后",
+                    "check_out": "通常为12:00前",
+                    "cancellation": "预订成功后，如需取消，请提前与酒店联系",
+                    "refund": "入住前24小时取消预订可全额退款，24小时内取消预订将收取一晚房费。"
                 }
             }
-            
-            logger.info(f"成功获取酒店信息: {hotel_name}")
-            return hotel_info
         except Exception as e:
             logger.error(f"获取酒店信息失败: {str(e)}")
             return {
