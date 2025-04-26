@@ -31,6 +31,9 @@ class AgentService:
         # 初始化对话上下文记忆字典
         # 格式: {conversation_id: {"hotel_name": xxx, "room_number": xxx, ...}}
         self.conversation_contexts = {}
+        
+        # 上下文记忆保存的最大对话轮数
+        self.context_memory_turns = int(os.getenv("CONTEXT_MEMORY_TURNS", "20"))  # 默认保存20轮对话的上下文
         # 初始化提示模板
         self._init_prompts()
 
@@ -111,44 +114,59 @@ class AgentService:
             return
             
         # 从用户消息中提取关键信息
-        # 获取当前对话的上下文记忆
+        # 获取对话上下文，或创建新的上下文
         context = self.conversation_contexts.get(conversation_id, {})
-        print(f"当前对话上下文: {context}")
         
-        # 使用千问API分析用户意图
-        user_intent = await self._analyze_user_intent(user_message)
+        # 将用户消息添加到对话中
+        user_message = Message(role="user", content=user_message)
+        conversation.add_message(user_message)
+        # 保存消息到数据库
+        self.db_service.save_message(conversation_id, user_message)
+        
+        # 分析用户意图
+        user_intent = await self._analyze_user_intent(user_message.content)
         print(f"用户意图分析结果: {user_intent}")
         
-        # 检查用户是否在询问酒店信息
-        is_asking_hotel_info = user_intent.get('is_asking_hotel_info', False)
+        # 使用reasoning_graph中的API方法分析用户消息
+        from agent.app.agents.reasoning_graph import ReasoningGraph
+        reasoning_graph_instance = ReasoningGraph(self.qwen_service, self.gaode_service)
+        
+        # 调用extract_info_with_api方法获取分析结果
+        api_result = await reasoning_graph_instance.extract_info_with_api(user_message.content)
+        
+        # 从结果中提取酒店名称和是否询问酒店信息
+        hotel_name = api_result.get('hotel_name')
+        is_asking_hotel_info = api_result.get('is_asking_hotel_info', False)
+        is_refund_request = api_result.get('is_refund_request', False)
+        
+        # 记录用户意图到上下文
+        context["is_asking_hotel_info"] = is_asking_hotel_info
+        context["is_refund_request"] = is_refund_request
+        
         if is_asking_hotel_info:
             print("用户正在询问酒店信息")
         
-        # 使用千问API判断用户提到的实体是否是酒店或宾馆
-        print(f"用户意图分析结果: {user_intent}")
-        hotel_name = user_intent.get('hotel_name')
+        print(f"API分析结果: {api_result}")
         
-        # 如果千问API没有识别出酒店名称，尝试使用正则表达式提取
-        if not hotel_name and ("酒店" in user_message or "宾馆" in user_message):
-            import re
-            # 尝试匹配完整的酒店名称，如"广州汉庭酒店"
-            hotel_pattern = re.compile(r"([\u4e00-\u9fa5a-zA-Z]+(?:酒店|宾馆))")
-            hotel_match = hotel_pattern.search(user_message)
-            if hotel_match:
-                hotel_name = hotel_match.group(1)
-                print(f"通过正则表达式提取到酒店名称: {hotel_name}")
-            else:
-                # 尝试提取地名+酒店的组合
-                location_pattern = re.compile(r"([\u4e00-\u9fa5]+)(?:的|在)?(?:酒店|宾馆)")
-                location_match = location_pattern.search(user_message)
-                if location_match:
-                    location = location_match.group(1)
-                    hotel_name = f"{location}酒店"  # 假设用户想查询的是该地区的酒店
-                    print(f"提取到地点+酒店的组合: {hotel_name}")
+        # 如果API无法识别出酒店名称，使用helpers.py中的extract_hotel_name函数提取
+        if not hotel_name and ("酒店" in user_message.content or "宾馆" in user_message.content or "旅馆" in user_message.content):
+            from agent.app.utils.helpers import extract_hotel_name
+            hotel_name = extract_hotel_name(user_message.content)
+            print(f"使用extract_hotel_name函数提取到酒店名称: {hotel_name}")
         
+        # 如果当前消息中没有提取到酒店名称，但上下文中有，则保留上下文中的酒店名称
+        if not hotel_name and context.get("hotel_name"):
+            hotel_name = context.get("hotel_name")
+            print(f"使用上下文中的酒店名称: {hotel_name}")
+        
+        # 更新酒店名称到上下文
         if hotel_name:
             context["hotel_name"] = hotel_name
             print(f"最终确定的酒店名称: {hotel_name}")
+            
+            # 将酒店名称保存到对话元数据中，确保持久化
+            conversation.metadata["hotel_name"] = hotel_name
+            self.db_service.update_conversation(conversation)
             
             # 使用高德MCP服务获取真实酒店信息
             from agent.app.services.gaode_mcp_service import gaode_mcp_service

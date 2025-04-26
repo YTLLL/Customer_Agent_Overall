@@ -245,6 +245,67 @@ class ReasoningGraph:
             graph.set_entry_point("generate_response")
             return graph.compile()
     
+    async def extract_info_with_api(self, user_message: str) -> dict:
+        """使用API从用户消息中提取酒店信息
+        
+        Args:
+            user_message: 用户消息
+            
+        Returns:
+            dict: 包含酒店名称和退款请求状态的字典
+        """
+        try:
+            # 使用千问API分析用户意图
+            prompt = f"""请分析以下用户消息的意图，并返回JSON格式的结果。
+
+用户消息: {user_message}
+
+请分析以下内容:
+1. 用户是否提到了具体的酒店名称
+2. 用户是否在请求退款或退票
+3. 用户是否在询问酒店信息
+
+请以JSON格式返回结果，包含以下字段:
+- hotel_name: 酒店名称，如果没有则为null
+- is_refund_request: 是否是退款请求，布尔值
+- is_asking_hotel_info: 是否询问酒店信息，布尔值
+"""
+            
+            result = await self.qwen_service.analyze_text(user_message, prompt)
+            response = result.get("raw_response", "{}")
+            
+            # 尝试解析JSON结果
+            import json
+            import re
+            
+            try:
+                # 尝试提取JSON部分
+                json_match = re.search(r'\{[\s\S]*\}', response)
+                if json_match:
+                    json_str = json_match.group(0)
+                    intent_data = json.loads(json_str)
+                else:
+                    intent_data = json.loads(response)
+                
+                # 提取酒店名称和退款请求状态
+                hotel_name = intent_data.get("hotel_name")
+                is_refund_request = intent_data.get("is_refund_request", False)
+                is_asking_hotel_info = intent_data.get("is_asking_hotel_info", False)
+                
+                print(f"API分析结果: 酒店={hotel_name}, 退款={is_refund_request}, 询问信息={is_asking_hotel_info}")
+                
+                return {
+                    "hotel_name": hotel_name,
+                    "is_refund_request": is_refund_request,
+                    "is_asking_hotel_info": is_asking_hotel_info
+                }
+            except Exception as e:
+                print(f"解析API响应时出错: {str(e)}")
+                return {"hotel_name": None, "is_refund_request": None, "is_asking_hotel_info": None}
+        except Exception as e:
+            print(f"调用API分析意图时出错: {str(e)}")
+            return {"hotel_name": None, "is_refund_request": None, "is_asking_hotel_info": None}
+    
     async def _extract_info(self, state: ReasoningState) -> ReasoningState:
         """从用户消息中提取关键信息
         
@@ -255,15 +316,28 @@ class ReasoningGraph:
             更新后的推理状态
         """
         try:
-            # 提取酒店名称
-            hotel_name = extract_hotel_name(state["user_message"])
+            user_message = state["user_message"]
             
-            # 判断是否是退票请求
-            is_refund_request = "退票" in state["user_message"] or "退款" in state["user_message"] or "退订" in state["user_message"]
+            # 首先使用API来理解酒店信息
+            api_result = await self.extract_info_with_api(user_message)
+            hotel_name = api_result["hotel_name"]
+            is_refund_request = api_result["is_refund_request"]
+            
+            # 如果API无法提取酒店名称，使用备用方法
+            if not hotel_name:
+                from agent.app.utils.helpers import extract_hotel_name
+                hotel_name = extract_hotel_name(user_message)
+                print(f"使用备用方法提取酒店名称: {hotel_name}")
+            
+            # 如果API无法判断是否是退款请求，使用关键词匹配
+            if is_refund_request is None:
+                is_refund_request = "退票" in user_message or "退款" in user_message or "退订" in user_message
+                print(f"使用关键词匹配判断退款请求: {is_refund_request}")
             
             # 更新状态
             state["hotel_name"] = hotel_name
             state["is_refund_request"] = is_refund_request
+            state["is_asking_hotel_info"] = api_result["is_asking_hotel_info"]
             return state
         except Exception as e:
             # 记录错误并返回更新后的状态

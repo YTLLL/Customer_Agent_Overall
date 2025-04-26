@@ -34,6 +34,23 @@ class GaodeMCPService:
     
     def __init__(self):
         """初始化高德地图MCP服务"""
+        # 检查并加载环境变量
+        self.api_key = os.getenv("GAODE_API_KEY", "")
+        if not self.api_key:
+            # 尝试从.env文件加载
+            try:
+                from dotenv import load_dotenv
+                load_dotenv()
+                self.api_key = os.getenv("GAODE_API_KEY", "")
+                logger.info(f"从.env文件加载高德API密钥: {self.api_key[:6]}...")
+            except ImportError:
+                logger.warning("无法加载 dotenv模块，请确保环境变量已设置")
+        
+        if not self.api_key:
+            logger.warning("高德API密钥未设置，部分功能可能无法正常工作")
+        else:
+            logger.info(f"高德API密钥已设置: {self.api_key[:6]}...")
+            
         # 初始化高德地图MCP配置
         self.mcp_config = {
             "mcpServers": {
@@ -45,7 +62,7 @@ class GaodeMCPService:
                         "@wopal/mcp-gaode-maps"
                     ],
                     "env": {
-                        "GAODE_API_KEY": os.getenv("GAODE_API_KEY", "")
+                        "GAODE_API_KEY": self.api_key
                     }
                 }
             }
@@ -87,8 +104,13 @@ class GaodeMCPService:
                     "types": "酒店",  # 限制搜索类型为酒店
                     "city": "全国",  # 可以根据需要限制城市
                     "output": "json",
-                    "key": os.getenv("GAODE_API_KEY", "")
+                    "key": self.api_key  # 使用实例变量中的API密钥
                 }
+                
+                # 检查API密钥是否设置
+                if not self.api_key:
+                    logger.error("高德API密钥未设置，无法调用API")
+                    raise ValueError("高德API密钥未设置")
                 
                 # 构建API请求URL
                 api_url = "https://restapi.amap.com/v3/place/text?" + "&".join([f"{k}={v}" for k, v in search_params.items()])

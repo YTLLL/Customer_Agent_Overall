@@ -43,13 +43,38 @@ def format_hotel_info(hotel_data: Dict[str, Any]) -> str:
 def extract_hotel_name(message: str) -> str:
     """从用户消息中提取酒店名称
     
-    这个函数在实际应用中可以使用更复杂的NLP技术来提取实体
-    """
-    # 简单实现，实际项目中应使用NER或其他技术
-    keywords = ["酒店", "宾馆", "旅馆"]
+    这个函数结合多种方法来提取酒店名称，包括正则表达式和关键词匹配
     
+    Args:
+        message: 用户消息
+        
+    Returns:
+        str: 提取到的酒店名称，如果没有提取到则返回空字符串
+    """
+    import re
+    
+    # 方法1: 尝试匹配完整的酒店名称，如"广州汉庭酒店"
+    hotel_pattern = re.compile(r"([\u4e00-\u9fa5a-zA-Z]+(?:酒店|宾馆|旅馆))")
+    hotel_match = hotel_pattern.search(message)
+    if hotel_match:
+        hotel_name = hotel_match.group(1)
+        print(f"提取到酒店名称(方法1): {hotel_name}")
+        return hotel_name
+    
+    # 方法2: 尝试提取地名+酒店的组合
+    location_pattern = re.compile(r"([\u4e00-\u9fa5]+)(?:的|在)?(?:酒店|宾馆|旅馆)")
+    location_match = location_pattern.search(message)
+    if location_match:
+        location = location_match.group(1)
+        hotel_name = f"{location}酒店"  # 假设用户想查询的是该地区的酒店
+        print(f"提取到酒店名称(方法2): {hotel_name}")
+        return hotel_name
+    
+    # 方法3: 关键词上下文提取
+    keywords = ["酒店", "宾馆", "旅馆"]
     for keyword in keywords:
         if keyword in message:
+            # 提取关键词前后的一段文本
             start_index = message.find(keyword) - 10
             end_index = message.find(keyword) + 10
             
@@ -58,8 +83,11 @@ def extract_hotel_name(message: str) -> str:
             if end_index > len(message):
                 end_index = len(message)
             
-            return message[start_index:end_index]
+            context = message[start_index:end_index]
+            print(f"提取到酒店上下文(方法3): {context}")
+            return context
     
+    # 如果所有方法都失败，返回空字符串
     return ""
 
 def check_conversation_health(messages: List[Dict[str, Any]]) -> Dict[str, Any]:

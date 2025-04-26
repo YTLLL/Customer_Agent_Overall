@@ -170,14 +170,75 @@ async def chat_loop(conversation):
             context = agent_service.conversation_contexts.get(conversation.id, {})
             
             # 如果上下文中有酒店名称但没有酒店信息，尝试获取酒店信息
-            if context.get("hotel_name") and not context.get("hotel_info"):
+            if context.get("hotel_name") and not context.get("hotel_info") and not context.get("waiting_for_hotel_selection"):
                 hotel_name = context["hotel_name"]
                 print(f"尝试获取酒店信息: {hotel_name}")
                 hotel_info = await gaode_mcp_service.search_hotel(hotel_name)
-                if hotel_info:
+                
+                # 检查是否返回了多个酒店选项
+                if hotel_info and hotel_info.get("multiple_options", False):
+                    # 将多个酒店选项保存到上下文中
+                    context["hotel_options"] = hotel_info.get("hotels", [])
+                    context["waiting_for_hotel_selection"] = True
+                    agent_service.conversation_contexts[conversation.id] = context
+                    
+                    # 生成酒店选项列表供用户选择
+                    hotels_list = hotel_info.get("hotels", [])
+                    options_message = f"找到多家与'{hotel_name}'匹配的酒店，请选择具体是哪一家（输入对应的数字）：\n"
+                    for i, hotel in enumerate(hotels_list, 1):
+                        options_message += f"{i}. {hotel.get('name')} - {hotel.get('formatted_address')}\n"
+                    
+                    # 添加选项消息到对话
+                    assistant_message = Message(role="assistant", content=options_message)
+                    conversation.add_message(assistant_message)
+                    db_service.save_message(conversation.id, assistant_message)
+                    
+                    # 更新响应内容
+                    response = options_message
+                    print(f"需要用户选择具体酒店: {options_message}")
+                elif hotel_info:
+                    # 单个酒店信息，直接保存
                     context["hotel_info"] = hotel_info
                     agent_service.conversation_contexts[conversation.id] = context
-                    print(f"成功获取酒店信息: {hotel_info}")
+                    print(f"成功获取唯一酒店信息: {hotel_info}")
+            
+            # 处理用户对酒店选择的响应
+            elif context.get("waiting_for_hotel_selection", False) and context.get("hotel_options"):
+                try:
+                    # 尝试将用户输入解析为数字
+                    selection = None
+                    if user_input.isdigit():
+                        selection = int(user_input)
+                    else:
+                        # 尝试从用户消息中提取酒店名称进行匹配
+                        for i, hotel in enumerate(context["hotel_options"], 1):
+                            if hotel.get("name") in user_input:
+                                selection = i
+                                break
+                    
+                    if selection and 1 <= selection <= len(context["hotel_options"]):
+                        selected_hotel = context["hotel_options"][selection-1]
+                        print(f"用户选择了酒店: {selected_hotel.get('name')}")
+                        
+                        # 获取选定酒店的详细信息
+                        hotel_info = await gaode_mcp_service.search_hotel(selected_hotel.get("name"))
+                        if hotel_info and not hotel_info.get("multiple_options", False):
+                            # 保存详细酒店信息到上下文
+                            context["hotel_info"] = hotel_info
+                            context["hotel_name"] = selected_hotel.get("name")  # 更新为精确的酒店名称
+                            context["waiting_for_hotel_selection"] = False  # 重置选择状态
+                            del context["hotel_options"]  # 清理选项列表
+                            agent_service.conversation_contexts[conversation.id] = context
+                            print(f"成功获取选定酒店的详细信息: {hotel_info}")
+                            
+                            # 生成确认消息
+                            confirmation = f"您已选择: {hotel_info.get('name')}\n地址: {hotel_info.get('formatted_address')}\n电话: {hotel_info.get('tel')}\n\n有什么可以帮您的吗？"
+                            assistant_message = Message(role="assistant", content=confirmation)
+                            conversation.add_message(assistant_message)
+                            db_service.save_message(conversation.id, assistant_message)
+                            response = confirmation
+                except Exception as e:
+                    print(f"处理酒店选择时出错: {str(e)}")
             
             # 清空元数据，确保不会显示示例内容
             conversation.metadata = {}
