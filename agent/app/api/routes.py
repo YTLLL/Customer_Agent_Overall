@@ -9,6 +9,7 @@ from typing import Optional, List, Dict, Any
 
 from agent.app.models.conversation import Conversation, ConversationStatus, Message
 from agent.app.services.agent_service import AgentService
+from agent.app.services.calling_agent_service import CallingAgentService
 from agent.app.services.db_service import DBService
 
 # 创建路由器
@@ -18,7 +19,8 @@ router = APIRouter(prefix="/api", tags=["api"])
 def get_agent_service():
     """获取Agent服务实例"""
     return AgentService()
-
+def get_calling_agent_service():
+    return CallingAgentService()
 def get_db_service():
     """获取数据库服务实例"""
     return DBService()
@@ -48,7 +50,7 @@ async def create_or_continue_conversation(
     """创建新对话或继续现有对话"""
     # 查找用户现有的活跃对话
     conversation = db_service.get_active_conversation(request.user_id)
-    
+
     # 如果没有活跃对话，创建新对话
     if not conversation:
         conversation = Conversation(
@@ -57,7 +59,7 @@ async def create_or_continue_conversation(
             metadata=request.metadata or {}
         )
         db_service.save_conversation(conversation)
-    
+
     # 添加用户消息
     user_message = Message(
         role="user",
@@ -65,14 +67,14 @@ async def create_or_continue_conversation(
     )
     conversation.add_message(user_message)
     db_service.save_message(conversation.id, user_message)
-    
+
     # 在后台处理代理响应
     background_tasks.add_task(
         agent_service.process_message,
         conversation.id,
         request.message
     )
-    
+
     # 返回当前对话状态
     return ConversationResponse(
         conversation_id=conversation.id,
@@ -92,13 +94,18 @@ async def get_conversation(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"对话 {conversation_id} 不存在"
         )
-    
+    print("add newe as new meta data ")
+    conversation.metadata['newe'] = 'something'
+    # summary_agent = SummaryAgent()
+    # summary = await summary_agent.generate_summary(conversation)
+    #
+    # # ✅ 打印 summary 内容用于调试
+    # print("🔥 生成的对话总结：", summary)
     return ConversationResponse(
         conversation_id=conversation.id,
         messages=[msg.dict() for msg in conversation.messages],
         status=conversation.status.value
     )
-
 @router.post("/conversation/{conversation_id}/end")
 async def end_conversation(
     conversation_id: str,
@@ -112,12 +119,143 @@ async def end_conversation(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"对话 {conversation_id} 不存在"
         )
-    
+
     # 更新对话状态为已完成
     conversation.status = ConversationStatus.COMPLETED
+
+    # ✅ 正确地 await 调用 SummaryAgent 的异步方法
+    summary_agent = SummaryAgent()
+    summary = await summary_agent.generate_summary(conversation)
+
+    # ✅ 打印 summary 内容用于调试
+    print("🔥 生成的对话总结：", summary)
+
+    # ✅ 保存到 metadata 中
+    conversation.metadata["summary"] = summary
     db_service.update_conversation(conversation)
-    
-    # 生成对话总结
-    summary = agent_service.generate_summary(conversation)
-    
-    return {"status": "success", "message": "对话已结束", "summary": summary}
+
+    return {
+        "status": "success",
+        "message": "对话已结束",
+        "summary": summary
+    }
+
+
+@router.post("/callingconversation", response_model=ConversationResponse)
+async def create_or_continue_conversation(
+        request: ConversationRequest,
+        background_tasks: BackgroundTasks,
+        agent_service: AgentService = Depends(get_calling_agent_service),
+        db_service: DBService = Depends(get_db_service)
+):
+    """创建新对话或继续现有对话"""
+    # 查找用户现有的活跃对话
+    conversation = db_service.get_active_conversation(request.user_id)
+
+    # 如果没有活跃对话，创建新对话
+    if not conversation:
+        conversation = Conversation(
+            user_id=request.user_id,
+            channel=request.channel,
+            metadata=request.metadata or {}
+        )
+        db_service.save_conversation(conversation)
+
+    # 添加用户消息
+    user_message = Message(
+        role="user",
+        content=request.message
+    )
+    conversation.add_message(user_message)
+    db_service.save_message(conversation.id, user_message)
+
+    # 在后台处理代理响应
+    background_tasks.add_task(
+        agent_service.process_message,
+        conversation.id,
+        request.message
+    )
+
+    # 返回当前对话状态
+    return ConversationResponse(
+        conversation_id=conversation.id,
+        messages=[msg.dict() for msg in conversation.messages],
+        status=conversation.status.value
+    )
+
+
+@router.get("/callingconversation/{conversation_id}", response_model=ConversationResponse)
+async def get_conversation(
+        conversation_id: str,
+        db_service: DBService = Depends(get_db_service)
+):
+    """获取特定对话的详情"""
+    conversation = db_service.get_conversation(conversation_id)
+    if not conversation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"对话 {conversation_id} 不存在"
+        )
+
+    return ConversationResponse(
+        conversation_id=conversation.id,
+        messages=[msg.dict() for msg in conversation.messages],
+        status=conversation.status.value
+    )
+# @router.post("/conversation/{conversation_id}/end")
+# async def end_conversation(
+#     conversation_id: str,
+#     db_service: DBService = Depends(get_db_service),
+#     agent_service: AgentService = Depends(get_agent_service)
+# ):
+#     """结束对话并生成总结"""
+#     conversation = db_service.get_conversation(conversation_id)
+#     if not conversation:
+#         raise HTTPException(
+#             status_code=status.HTTP_404_NOT_FOUND,
+#             detail=f"对话 {conversation_id} 不存在"
+#         )
+#
+#     # 更新对话状态为已完成
+#     conversation.status = ConversationStatus.COMPLETED
+#     db_service.update_conversation(conversation)
+#
+#     # 生成对话总结
+#     summary = agent_service.generate_summary(conversation)
+#
+#     return {"status": "success", "message": "对话已结束", "summary": summary}
+from agent.app.agents.summary_agent import SummaryAgent  # 引入 SummaryAgent
+
+@router.post("/callingconversation/{conversation_id}/end")
+async def end_conversation(
+    conversation_id: str,
+    db_service: DBService = Depends(get_db_service),
+    agent_service: AgentService = Depends(get_agent_service)
+):
+    """结束对话并生成总结"""
+    conversation = db_service.get_conversation(conversation_id)
+    if not conversation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"对话 {conversation_id} 不存在"
+        )
+
+    # 更新对话状态为已完成
+    conversation.status = ConversationStatus.COMPLETED
+
+    # ✅ 正确地 await 调用 SummaryAgent 的异步方法
+    summary_agent = SummaryAgent()
+    summary = await summary_agent.generate_calling_summary(conversation)
+
+    # ✅ 打印 summary 内容用于调试
+    print("🔥 生成的对话总结：", summary)
+
+    # ✅ 保存到 metadata 中
+    conversation.metadata["summary"] = summary
+    db_service.update_conversation(conversation)
+
+    return {
+        "status": "success",
+        "message": "对话已结束",
+        "summary": summary
+    }
