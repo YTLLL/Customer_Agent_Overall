@@ -39,6 +39,7 @@ def format_hotel_info(hotel_data: Dict[str, Any]) -> str:
     info += f"退房政策: {hotel_data.get('checkout_policy', '未知')}\n"
     
     return info
+# def extract_telephone_name(message:str)->str:
 
 def extract_hotel_name(message: str) -> str:
     """从用户消息中提取酒店名称

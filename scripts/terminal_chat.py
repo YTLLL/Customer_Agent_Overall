@@ -52,7 +52,7 @@ if 'DASHSCOPE_API_KEY' in os.environ:
         print("成功更新API客户端")
 
 async def create_conversation():
-    """创建一个新的对话"""
+    """创建个新的对话"""
     user_id = f"terminal_user_{uuid.uuid4().hex[:8]}"
     conversation_id = str(uuid.uuid4())
     
@@ -86,11 +86,12 @@ async def chat_loop(conversation):
     # 初始化服务
     agent_service = AgentService()
     db_service = DBService()
-    
+    context = None
     while True:
+        print("新一轮的context是", context)
         # 获取用户输入
         user_input = input("\n请输入消息 (输入'exit'退出，输入'metadata'查看元数据): ")
-        
+        telephone = None
         # 检查特殊命令
         if user_input.lower() == 'exit':
             print("\n退出程序")
@@ -106,7 +107,9 @@ async def chat_loop(conversation):
             if context.get("hotel_name") and not context.get("hotel_info"):
                 hotel_name = context["hotel_name"]
                 print(f"尝试获取酒店信息: {hotel_name}")
-                hotel_info = await gaode_mcp_service.search_hotel(hotel_name)
+                hotel_info = None
+                if not context.get("telephone"):
+                    hotel_info = await gaode_mcp_service.search_hotel(hotel_name)
                 if hotel_info:
                     context["hotel_info"] = hotel_info
                     agent_service.conversation_contexts[conversation.id] = context
@@ -135,8 +138,10 @@ async def chat_loop(conversation):
             messages_before = len(conversation.messages)
             
             # 调用agent_service处理消息
-            await agent_service.process_message(conversation.id, user_input)
-            
+            telephone = await agent_service.process_message(conversation.id, user_input)
+            if telephone:
+                print("telephone is ", telephone)
+                context['telephone'] = telephone
             # 重新获取对话，确保我们有最新的消息
             try:
                 # db_service.get_conversation 是同步方法，不需要 await
@@ -173,6 +178,9 @@ async def chat_loop(conversation):
             # 如果上下文为空，尝试从用户输入中提取酒店信息
             if not context:
                 # 检查是否是文字输入
+                telephone = await reasoning_graph.extract_info_with_api(user_input)
+                context["telephone"] = telephone
+                print("查到电话号码")
                 if "酒店" in user_input or "宾馆" in user_input or "旅馆" in user_input:
                     from agent.app.utils.helpers import extract_hotel_name
                     hotel_name = extract_hotel_name(user_input)
@@ -194,7 +202,9 @@ async def chat_loop(conversation):
             if context.get("hotel_name") and not context.get("hotel_info") and not context.get("waiting_for_hotel_selection", False):
                 hotel_name = context["hotel_name"]
                 print(f"尝试获取酒店信息: {hotel_name}")
-                hotel_info = await gaode_mcp_service.search_hotel(hotel_name)
+                hotel_info = None
+                if not context.get("telephone"):
+                    hotel_info = await gaode_mcp_service.search_hotel(hotel_name)
                 
                 # 检查是否返回了多个酒店选项
                 if hotel_info and hotel_info.get("multiple_options", False):

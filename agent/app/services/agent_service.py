@@ -136,6 +136,9 @@ class AgentService:
         
         # 从结果中提取酒店名称和是否询问酒店信息
         hotel_name = api_result.get('hotel_name')
+        telephone = api_result.get('telephone')
+        with open("w.txt", "w") as f:
+            f.write("得到电话了吗",telephone)
         is_asking_hotel_info = api_result.get('is_asking_hotel_info', False)
         is_refund_request = api_result.get('is_refund_request', False)
         
@@ -158,7 +161,7 @@ class AgentService:
         if not hotel_name and context.get("hotel_name"):
             hotel_name = context.get("hotel_name")
             print(f"使用上下文中的酒店名称: {hotel_name}")
-        
+
         # 更新酒店名称到上下文
         if hotel_name:
             context["hotel_name"] = hotel_name
@@ -172,9 +175,11 @@ class AgentService:
             from agent.app.services.gaode_mcp_service import gaode_mcp_service
             print(f"开始使用高德MCP服务获取酒店信息: {hotel_name}")
             try:
-                hotel_info = await gaode_mcp_service.search_hotel(hotel_name)
-                print(f"高德MCP服务返回结果: {hotel_info}")
-                
+                hotel_info = None
+                if not telephone:
+                    hotel_info = await gaode_mcp_service.search_hotel(hotel_name)
+                    print(f"高德MCP服务返回结果: {hotel_info}")
+
                 if hotel_info:
                     # 检查是否返回了多个酒店选项
                     if hotel_info.get("multiple_options"):
@@ -261,7 +266,9 @@ class AgentService:
             from agent.app.services.gaode_mcp_service import gaode_mcp_service
             hotel_name = context["hotel_name"]
             print(f"用户询问酒店信息，尝试获取酒店信息: {hotel_name}")
-            hotel_info = await gaode_mcp_service.search_hotel(hotel_name)
+            hotel_info = None
+            if not telephone:
+                hotel_info = await gaode_mcp_service.search_hotel(hotel_name)
             if hotel_info:
                 # 检查是否返回了多个酒店选项
                 if hotel_info.get("multiple_options"):
@@ -382,6 +389,7 @@ class AgentService:
         
         # 更新对话状态
         self.db_service.update_conversation(conversation)
+        return telephone
 
     def _format_conversation_history(self, conversation: Conversation) -> str:
         """格式化对话历史"""
