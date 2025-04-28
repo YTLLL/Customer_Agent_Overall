@@ -1,6 +1,6 @@
 import asyncio
 from agent.app.models.conversation import Conversation, Message
-from agent.app.agents.reasoning_graph import ReasoningGraph  # 你的 ReasoningGraph 文件路径
+from agent.app.agents.new_reasoning_graph import ReasoningGraph  # 你的 ReasoningGraph 文件路径
 import sys
 
 

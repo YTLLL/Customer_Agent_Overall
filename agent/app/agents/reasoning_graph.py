@@ -1,25 +1,23 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-
 """推理图模块
 
 这个模块实现了推理代理功能，负责处理用户的酒店服务请求。
 使用顺序处理流程实现推理，便于后期与其他模块集成。
+
+该模块遵循PEP 8规范，提供了完整的类型注解和文档字符串。
 """
 
 import os
-import json
-import logging
-import re
+from typing import List, Dict, Any, Optional, TypedDict, Literal, cast
 from enum import Enum
-from typing import Dict, List, Literal, TypedDict, Optional, Union, Any, Tuple
 
 from langchain.prompts import PromptTemplate
+# 导入langgraph相关组件
 from langgraph.graph import StateGraph, END
+from pydantic import BaseModel, Field
 
 from agent.app.models.conversation import Conversation, Message
-from agent.app.services.qwen_text_service import QwenTextService
 from agent.app.utils.helpers import extract_hotel_name, format_hotel_info
+from agent.app.services.qwen_text_service import QwenTextService
 from agent.app.services.gaode_mcp_service import gaode_mcp_service
 from agent.app.services.websocket_service import connection_manager
 
@@ -99,11 +97,6 @@ class ReasoningGraph:
 
         # 初始化提示模板
         self._init_prompts()
-
-        # 构建并编译推理图
-        self.graph = self._build_graph()
-
-        # 推理图功能已经被移至agent_service.py，这里保留基本结构以保证兼容性
 
     def _init_prompts(self) -> None:
         """初始化提示模板
@@ -208,110 +201,36 @@ class ReasoningGraph:
         Returns:
             编译后的状态图
         """
-        try:
-            # 创建状态图
-            graph = StateGraph(ReasoningState)
+        # 创建状态图
+        graph = StateGraph(ReasoningState)
 
-            # 添加节点
-            graph.add_node("extract_info", self._extract_info)  # 使用字符串而不是枚举
-            graph.add_node("get_hotel_info", self._get_hotel_info)
-            graph.add_node("analyze_refund_request", self._analyze_refund_request)
-            graph.add_node("generate_response", self._generate_response)
-            graph.add_node("check_goal", self._check_goal)
+        # 添加节点
+        graph.add_node(NodeType.EXTRACT_INFO, self._extract_info)
+        graph.add_node(NodeType.GET_HOTEL_INFO, self._get_hotel_info)
+        graph.add_node(NodeType.ANALYZE_REFUND_REQUEST, self._analyze_refund_request)
+        graph.add_node(NodeType.GENERATE_RESPONSE, self._generate_response)
+        graph.add_node(NodeType.CHECK_GOAL, self._check_goal)
 
-            # 设置边 - 定义节点间的流转关系
-            graph.add_edge("extract_info", "get_hotel_info")
-            graph.add_edge("get_hotel_info", "analyze_refund_request")
-            graph.add_edge("analyze_refund_request", "generate_response")
-            graph.add_edge("generate_response", "check_goal")
+        # 设置边 - 定义节点间的流转关系
+        graph.add_edge(NodeType.EXTRACT_INFO, NodeType.GET_HOTEL_INFO)
+        graph.add_edge(NodeType.GET_HOTEL_INFO, NodeType.ANALYZE_REFUND_REQUEST)
+        graph.add_edge(NodeType.ANALYZE_REFUND_REQUEST, NodeType.GENERATE_RESPONSE)
+        graph.add_edge(NodeType.GENERATE_RESPONSE, NodeType.CHECK_GOAL)
 
-            # 设置条件边 - 根据目标达成状态决定流程是否结束
-            graph.add_conditional_edges(
-                "check_goal",
-                self._route_on_goal,
-                {
-                    "completed": END,  # 目标已完成，结束流程
-                    "continue": END  # 目标未完成，但当前对话轮次结束
-                }
-            )
+        # 设置条件边 - 根据目标达成状态决定流程是否结束
+        graph.add_conditional_edges(
+            NodeType.CHECK_GOAL,
+            self._route_on_goal,
+            {
+                "completed": END,  # 目标已完成，结束流程
+                "continue": END  # 目标未完成，但当前对话轮次结束
+            }
+        )
 
-            # 设置入口点 - 使用字符串而不是枚举
-            graph.set_entry_point("extract_info")
+        # 设置入口点
+        graph.set_entry_point(NodeType.EXTRACT_INFO)
 
-            # 编译图
-            compiled_graph = graph.compile()
-            return compiled_graph
-        except Exception as e:
-            print(f"构建推理图时出错: {str(e)}")
-            # 返回一个简单的图以避免崩溃
-            graph = StateGraph(ReasoningState)
-            graph.add_node("generate_response", self._generate_response)
-            graph.set_entry_point("generate_response")
-            return graph.compile()
-
-    async def extract_info_with_api(self, user_message: str) -> dict:
-        """使用API从用户消息中提取酒店信息
-
-        Args:
-            user_message: 用户消息
-
-        Returns:
-            dict: 包含酒店名称和退款请求状态的字典
-        """
-        try:
-            # 使用千问API分析用户意图
-            prompt = f"""请分析以下用户消息的意图，并返回JSON格式的结果。
-
-用户消息: {user_message}
-
-请分析以下内容:
-1. 用户是否提到了具体的酒店名称
-2. 用户是否在请求退款或退票
-3. 用户是否在询问酒店信息
-
-请以JSON格式返回结果，包含以下字段:
-- telephone: 电话号码，如果没有则为null
-- hotel_name: 酒店名称，如果没有则为null
-- is_refund_request: 是否是退款请求，布尔值
-- is_asking_hotel_info: 是否询问酒店信息，布尔值
-"""
-
-            result = await self.qwen_service.analyze_text(user_message, prompt)
-            response = result.get("raw_response", "{}")
-
-            # 尝试解析JSON结果
-            import json
-            import re
-
-            try:
-                # 尝试提取JSON部分
-                json_match = re.search(r'\{[\s\S]*\}', response)
-                if json_match:
-                    json_str = json_match.group(0)
-                    intent_data = json.loads(json_str)
-                else:
-                    intent_data = json.loads(response)
-
-                # 提取酒店名称和退款请求状态
-                hotel_name = intent_data.get("hotel_name")
-                is_refund_request = intent_data.get("is_refund_request", False)
-                is_asking_hotel_info = intent_data.get("is_asking_hotel_info", False)
-                telephone = intent_data.get("telephone", False)
-
-                print(f"API分析结果: 电话={telephone} 酒店={hotel_name}, 退款={is_refund_request}, 询问信息={is_asking_hotel_info}")
-
-                return {
-                    "hotel_name": hotel_name,
-                    "is_refund_request": is_refund_request,
-                    "is_asking_hotel_info": is_asking_hotel_info,
-                    "telephone": telephone
-                }
-            except Exception as e:
-                print(f"解析API响应时出错: {str(e)}")
-                return {"hotel_name": None, "telephone": None, "is_refund_request": None, "is_asking_hotel_info": None}
-        except Exception as e:
-            print(f"调用API分析意图时出错: {str(e)}")
-            return {"hotel_name": None, "telephone":None, "is_refund_request": None, "is_asking_hotel_info": None}
+        return graph.compile()
 
     async def _extract_info(self, state: ReasoningState) -> ReasoningState:
         """从用户消息中提取关键信息
@@ -323,28 +242,16 @@ class ReasoningGraph:
             更新后的推理状态
         """
         try:
-            user_message = state["user_message"]
+            # 提取酒店名称
+            hotel_name = extract_hotel_name(state["user_message"])
 
-            # 首先使用API来理解酒店信息
-            api_result = await self.extract_info_with_api(user_message)
-            hotel_name = api_result["hotel_name"]
-            is_refund_request = api_result["is_refund_request"]
-
-            # 如果API无法提取酒店名称，使用备用方法
-            if not hotel_name:
-                from agent.app.utils.helpers import extract_hotel_name
-                hotel_name = extract_hotel_name(user_message)
-                print(f"使用备用方法提取酒店名称: {hotel_name}")
-
-            # 如果API无法判断是否是退款请求，使用关键词匹配
-            if is_refund_request is None:
-                is_refund_request = "退票" in user_message or "退款" in user_message or "退订" in user_message
-                print(f"使用关键词匹配判断退款请求: {is_refund_request}")
+            # 判断是否是退票请求
+            is_refund_request = "退票" in state["user_message"] or "退款" in state["user_message"] or "退订" in state[
+                "user_message"]
 
             # 更新状态
             state["hotel_name"] = hotel_name
             state["is_refund_request"] = is_refund_request
-            state["is_asking_hotel_info"] = api_result["is_asking_hotel_info"]
             return state
         except Exception as e:
             # 记录错误并返回更新后的状态
@@ -642,7 +549,7 @@ class ReasoningGraph:
             history += f"{role}: {msg.content}\n\n"
         return history
 
-    async def process_request(self, conversation: Conversation, user_message: str) -> str:
+    async def process_request(self, conversation_id: str, user_message: str) -> str:
         """处理用户请求并生成回复
 
         Args:
@@ -652,120 +559,28 @@ class ReasoningGraph:
         Returns:
             生成的回复字符串
         """
-        print("开始处理用户请求...")
+
+        # 初始化状态
+        initial_state: ReasoningState = {
+            "conversation": conversation,
+            "user_message": user_message,
+            "hotel_name": None,
+            "hotel_info": None,
+            "response": None,
+            "goal_achieved": False,
+            "error": None
+        }
 
         try:
-            # 初始化状态
-            initial_state: ReasoningState = {
-                "conversation": conversation,
-                "user_message": user_message,
-                "hotel_name": None,
-                "hotel_info": None,
-                "response": None,
-                "goal_achieved": False,
-                "error": None
-            }
+            # 运行推理图
+            final_state = await self.graph.ainvoke(initial_state)
 
-            # 使用通义千问API生成回复
-            try:
-                print("使用通义千问API生成回复...")
+            # 检查是否有错误
+            if final_state.get("error"):
+                return f"抱歉，处理您的请求时遇到了问题: {final_state['error']}"
 
-                # 构建提示
-                prompt = f"""您是一位专业的酒店客服，请根据用户消息生成合适的回复：
-
-                用户消息: {user_message}
-
-                如果用户请求换房，请询问必要的信息（如订单号、当前房间号、希望更换的房型、更换原因等）。
-                如果用户请求退款，请询问必要的信息（如订单号、酒店名称、入住日期、客人姓名等）。
-
-                请使用礼貌、专业的语气。
-                """
-
-                response = await self.qwen_service.analyze_text(user_message, prompt)
-                return response.get('raw_response', "抱歉，我无法处理您的请求，请稍后再试。")
-
-            except Exception as api_error:
-                print(f"API调用错误: {str(api_error)}")
-
-                # 如果API调用失败，使用简单的备用逻辑
-                if "换房" in user_message or "换一间" in user_message or "双床房" in user_message or "大床房" in user_message:
-                    # 构建换房回复
-                    response_parts = []
-
-                    # 确认已知信息
-                    if context.get("hotel_name") and context.get("room_number"):
-                        response_parts.append(f"您好，我已收到您在{context['hotel_name']}的{context['room_number']}房间的换房请求。")
-                    elif context.get("hotel_name"):
-                        response_parts.append(f"您好，我已收到您在{context['hotel_name']}的换房请求。")
-                    elif context.get("room_number"):
-                        response_parts.append(f"您好，我已收到您关于{context['room_number']}房间的换房请求。")
-                    else:
-                        response_parts.append("您好，我已收到您的换房请求。")
-
-                    # 确认已知的房间类型
-                    if context.get("room_type"):
-                        response_parts.append(f"我们会尽力为您安排{context['room_type']}。")
-
-                    # 确认已知的更换原因
-                    if context.get("change_reason"):
-                        response_parts.append(f"我理解您的更换原因是{context['change_reason']}。")
-
-                    # 询问缺失的信息
-                    missing_info = []
-                    if not context.get("order_number"):
-                        missing_info.append("您当前的订单号")
-                    if not context.get("room_type"):
-                        missing_info.append("您希望更换的房间类型")
-                    if not context.get("change_reason"):
-                        missing_info.append("更换的原因")
-
-                    if missing_info:
-                        response_parts.append("为了更好地为您服务，请提供以下信息：")
-                        for i, info in enumerate(missing_info, 1):
-                            response_parts.append(f"{i}. {info}")
-                    else:
-                        # 如果所有信息已提供，则确认处理
-                        response_parts.append("我们已收到您的所有信息，正在处理您的换房请求。我们将尽快为您安排新的房间。")
-
-                    # 添加结尾语
-                    response_parts.append("我们将尽快处理您的请求，并为您提供可用的房间选项。")
-
-                    # 生成最终回复
-                    return "\n".join(response_parts)
-
-                elif "退票" in user_message or "退款" in user_message or "取消预订" in user_message:
-                    # 构建退款回复
-                    response_parts = []
-
-                    # 确认已知信息
-                    if context.get("hotel_name"):
-                        response_parts.append(f"您好，我已收到您关于{context['hotel_name']}的退款请求。")
-                    else:
-                        response_parts.append("您好，我已收到您的退款请求。")
-
-                    # 询问缺失的信息
-                    missing_info = []
-                    if not context.get("hotel_name"):
-                        missing_info.append("酒店名称")
-                    if not context.get("order_number"):
-                        missing_info.append("订单号")
-
-                    if missing_info:
-                        response_parts.append("为了更好地为您处理退款请求，请提供以下信息：")
-                        for i, info in enumerate(missing_info, 1):
-                            response_parts.append(f"{i}. {info}")
-                        response_parts.append("还请提供入住日期和客人姓名等信息，以便我们更好地为您服务。")
-                    else:
-                        # 如果所有信息已提供，则确认处理
-                        response_parts.append("我们已收到您的所有信息，正在处理您的退款请求。我们将在工作日内完成退款处理。")
-
-                    # 生成最终回复
-                    return "\n".join(response_parts)
-
-                else:
-                    return "您好，我是酒店服务助手。请问有什么可以帮助您的吗？"
-
+            # 返回生成的回复
+            return final_state.get("response", "抱歉，无法生成回复")
         except Exception as e:
-            # 处理其他异常
-            print(f"处理请求时发生异常: {str(e)}")
+            # 处理推理图执行过程中的异常
             return f"抱歉，系统处理您的请求时遇到了技术问题: {str(e)}"

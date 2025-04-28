@@ -5,7 +5,34 @@ from agent.app.services.gaode_mcp_service import gaode_mcp_service
 from agent.app.services.websocket_service import connection_manager
 from typing import Optional, TypedDict, Literal
 import json
+import json
+import re
+from typing import Dict, Any
 
+
+def safe_load_json(raw_text: str) -> Dict[str, Any]:
+    """
+    从包含 ```json 块的文本中安全提取 JSON 并解析成字典。
+    如果解析失败，返回空字典。
+
+    Args:
+        raw_text (str): 原始模型返回的文本
+
+    Returns:
+        Dict[str, Any]: 提取后的 JSON 字典
+    """
+    try:
+        # 正则提取出中间 {} 里的 JSON 块
+        json_match = re.search(r'\{[\s\S]*\}', raw_text)
+        if json_match:
+            json_str = json_match.group(0)
+            return json.loads(json_str)
+        else:
+            # 如果没有 ``` 包裹，直接解析
+            return json.loads(raw_text)
+    except Exception as e:
+        print(f"❌ safe_load_json 解析失败: {str(e)}")
+        return {}
 class ReasoningState(TypedDict):
     conversation: Conversation
     user_message: str
@@ -18,8 +45,11 @@ class ReasoningState(TypedDict):
     need_user_confirm_hotel: Optional[bool]
     booking_info_complete: Optional[bool]
     error: Optional[str]
+    need_generate_response: Optional[bool]
     flow_type: Optional[str]
-
+    need_hotel_info: Optional[str]
+    need_analyze_booking: Optional[bool]
+    need_analyze_refund: Optional[bool]
 
 def print_state_graph(graph: StateGraph) -> None:
     """打印状态图的节点和边的结构"""
@@ -139,7 +169,7 @@ class ReasoningGraph:
     def __init__(self):
         self.qwen_service = QwenTextService()
         self.graph = self.compile_graph(self._build_graph())
-
+        self.metadata = {}
 
     def _build_graph(self) -> StateGraph:
         graph = StateGraph(ReasoningState)
@@ -157,8 +187,8 @@ class ReasoningGraph:
             self._route_on_goal,
             {
                 "completed": END,
-                "need_hotel_info": "get_hotel_info",
                 "need_generate_response": "generate_response",
+                "need_hotel_info": "get_hotel_info",
                 "need_analyze_booking": "analyze_booking_request",
                 "need_analyze_refund": "analyze_refund_request",
             }
@@ -171,11 +201,6 @@ class ReasoningGraph:
         graph.set_entry_point("extract_info")
         print("building graph...")
         print("building graph... the graph is ", graph)
-        for node in graph.nodes:
-            if not callable(graph.nodes[node]):
-                raise RuntimeError(f"节点 {node} 不可调用: {graph.nodes[node]}")
-            else:
-                print("working")
         # print_state_graph(graph)
         # check_state_graph(graph)
         return graph
@@ -184,9 +209,15 @@ class ReasoningGraph:
 
     def _route_on_goal(self, state: ReasoningState) -> Literal[
         "completed", "need_hotel_info", "need_generate_response", "need_analyze_booking", "need_analyze_refund"]:
+
+
         if state.get("goal_achieved"):
             return "completed"
+        if state.get("need_generate_response"):
+            print("need generate response")
+            return "need_generate_response"
         if not state.get("hotel_info") and not state.get("need_user_confirm_hotel"):
+            "need hotel info"
             return "need_hotel_info"
         if state.get("flow_type") == "booking" and not state.get("booking_info_complete"):
             return "need_analyze_booking"
@@ -195,6 +226,7 @@ class ReasoningGraph:
         return "need_generate_response"
 
     async def _extract_info(self, state: ReasoningState) -> ReasoningState:
+        print("extract_info")
         user_message = state["user_message"]
         try:
             if any(keyword in user_message for keyword in ["退", "退款", "退订", "取消"]):
@@ -209,22 +241,60 @@ class ReasoningGraph:
             hotel_name_extracted = result_hotel.get("raw_response", "").strip()
             if hotel_name_extracted and hotel_name_extracted.lower() != "空":
                 state["hotel_name"] = hotel_name_extracted
+                self.metadata["hotel_name"] = hotel_name_extracted
+                state["conversation"].metadata["hotel_name"] = hotel_name_extracted
             else:
                 state["hotel_name"] = None
 
-            prompt_info = f"请从以下用户消息中提取信息：\n用户消息：{user_message}\n需要提取：destination, check_in_date, guest_name, hotel_tel"
+            prompt_info = f"""请从以下用户消息中提取关键信息，并以**标准JSON格式**返回。
+
+            用户消息：
+            {user_message}
+
+            需要提取以下字段（字段必须都有，如果没有请填null）：
+            - destination: 目的地
+            - check_in_date: 入住日期
+            - guest_name: 客人姓名
+            - hotel_tel: 酒店电话
+
+            请只返回标准JSON，比如：
+            {{
+              "destination": "上海",
+              "check_in_date": "2025-05-01",
+              "guest_name": "张三",
+              "hotel_tel": "021-12345678"
+            }}
+
+            如果某项信息未提及，填写 null，比如：
+            {{
+              "destination": "上海",
+              "check_in_date": null,
+              "guest_name": null,
+              "hotel_tel": null
+            }}
+            """
             result_info = await self.qwen_service.analyze_text(user_message, prompt_info)
+            print(result_info)
+
+
             raw_info = result_info.get("raw_response", "")
+            info = safe_load_json(raw_info)
+            print("info is ", info)
             try:
-                info = json.loads(raw_info)
+                self.metadata["check_in_date"] = info.get("check_in_date")
+                self.metadata["guest_name"] = info.get("guest_name")
+                self.metadata["destination"] = info.get("destination")
                 metadata = state["conversation"].metadata
-                metadata["destination"] = info.get("destination")
-                metadata["check_in_date"] = info.get("check_in_date")
-                metadata["guest_name"] = info.get("guest_name")
+                state["conversation"].metadata["destination"] = info.get("destination")
+                print("destination is ", info.get("destination"))
+                state["conversation"].metadata["check_in_date"] = info.get("check_in_date")
+                state["conversation"].metadata["guest_name"] = info.get("guest_name")
+                print("meta data is ", state["conversation"].metadata)
                 # 如果用户消息中提取到了酒店电话，直接写入 hotel_info 里
                 if info.get("hotel_tel"):
                     state["hotel_info"] = {"tel": info.get("hotel_tel")}
             except Exception:
+                print("exception", Exception)
                 pass
             return state
         except Exception as e:
@@ -232,12 +302,18 @@ class ReasoningGraph:
             return state
 
     async def _get_hotel_info(self, state: ReasoningState) -> ReasoningState:
+        print("get hotel info")
         hotel_name = state.get("hotel_name")
+        state["need_generate_response"] = False
         if not hotel_name:
-            state["error"] = "没有提供酒店名称，无法检索酒店信息。"
+            # state["error"] = "没有提供酒店名称，无法检索酒店信息。"
+            print("没有酒店名称")
+            state["need_generate_response"] = True
             return state
         try:
+            print("mcp")
             candidates = await gaode_mcp_service.search_hotels(hotel_name)
+            print("candidates are ", candidates)
             if not candidates:
                 state["hotel_info"] = None
                 return state
@@ -257,10 +333,12 @@ class ReasoningGraph:
                 state["hotel_info"] = None
             return state
         except Exception as e:
+            # print("get error", e)
             state["error"] = f"get_hotel_info_error: {str(e)}"
             return state
 
     async def _analyze_booking_request(self, state: ReasoningState) -> ReasoningState:
+        print("analyze booking request")
         try:
             metadata = state["conversation"].metadata or {}
             check_fields = ["hotel_name", "destination", "check_in_date", "hotel_info"]
@@ -272,6 +350,7 @@ class ReasoningGraph:
             return state
 
     async def _analyze_refund_request(self, state: ReasoningState) -> ReasoningState:
+        print("analyze refund request")
         try:
             metadata = state["conversation"].metadata or {}
             hotel_info = state.get("hotel_info") or metadata.get("hotel_info")
@@ -287,6 +366,7 @@ class ReasoningGraph:
             return state
 
     async def _generate_response(self, state: ReasoningState) -> ReasoningState:
+        print("generate response")
         try:
             metadata = state["conversation"].metadata or {}
             response_parts = []
@@ -345,6 +425,7 @@ class ReasoningGraph:
             return state
 
     async def _check_goal(self, state: ReasoningState) -> ReasoningState:
+        print("check goal")
         try:
             metadata = state["conversation"].metadata or {}
 
@@ -354,8 +435,10 @@ class ReasoningGraph:
                    (metadata.get("hotel_info") or state.get("hotel_info")):
                     state["goal_achieved"] = True
                 else:
-                    state["goal_achieved"] = False
 
+                    state["need_generate_response"] = True
+                    state["goal_achieved"] = False
+                    return state
             elif state.get("flow_type") == "refund":
                 hotel_info = state.get("hotel_info") or metadata.get("hotel_info")
                 if (metadata.get("hotel_name") or state.get("hotel_name")) and \
@@ -395,22 +478,15 @@ class ReasoningGraph:
             "flow_type": None,
         }
         try:
-            # print("the graph is ", self.graph)
-            # print("graph is", self.graph)
-            graph = self._build_graph()
-            print("Graph nodes:", graph.nodes)  # Check all nodes exist
-            print("Graph edges:", graph.edges)  # Check edges exist
+            # 运行推理图
+            final_state = await self.graph.ainvoke(initial_state)
 
-            # Verify initial state
-            print("Initial state keys:", initial_state.keys())
+            # 检查是否有错误
+            if final_state.get("error"):
+                return f"抱歉，处理您的请求时遇到了问题: {final_state['error']}"
 
-            result = graph.invoke(initial_state)
+            # 返回生成的回复
+            return final_state.get("response", "抱歉，无法生成回复")
         except Exception as e:
-            print("errorsdfs:", e)
-        response = result.get("response", "处理失败")
-
-        conversation.messages.append(
-            Message(role="assistant", content=response)
-        )
-
-        return response
+            # 处理推理图执行过程中的异常
+            return f"抱歉，系统处理您的请求时遇到了技术问题: {str(e)}"
