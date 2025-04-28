@@ -186,13 +186,15 @@ class ReasoningGraph:
             "check_goal",
             self._route_on_goal,
             {
-                "completed": END,
+                "completed": "finalize_conversation",
                 "need_generate_response": "generate_response",
                 "need_hotel_info": "get_hotel_info",
                 "need_analyze_booking": "analyze_booking_request",
                 "need_analyze_refund": "analyze_refund_request",
             }
         )
+        graph.add_node("finalize_conversation", self._finalize_conversation)
+        graph.add_edge("finalize_conversation", END)
         # graph.add_edge("check_goal", END)
         graph.add_edge("get_hotel_info", "check_goal")
         graph.add_edge("analyze_booking_request", "generate_response")
@@ -229,12 +231,13 @@ class ReasoningGraph:
         print("extract_info")
         user_message = state["user_message"]
         try:
-            if any(keyword in user_message for keyword in ["退", "退款", "退订", "取消"]):
-                state["flow_type"] = "refund"
-                state["is_refund_request"] = True
-            else:
-                state["flow_type"] = "booking"
-                state["is_refund_request"] = False
+            if not state.get("flow_type"):
+                if any(keyword in user_message for keyword in ["退", "退款", "退订", "取消"]):
+                    state["flow_type"] = "refund"
+                    state["is_refund_request"] = True
+                else:
+                    state["flow_type"] = "booking"
+                    state["is_refund_request"] = False
 
             prompt_hotel = f"请从以下用户消息中提取酒店名称。如果没有提到酒店，请返回空。\n用户消息：{user_message}"
             result_hotel = await self.qwen_service.analyze_text(user_message, prompt_hotel)
@@ -281,20 +284,22 @@ class ReasoningGraph:
             info = safe_load_json(raw_info)
             print("info is ", info)
             try:
-                self.metadata["check_in_date"] = info.get("check_in_date")
-                self.metadata["guest_name"] = info.get("guest_name")
-                self.metadata["destination"] = info.get("destination")
-                metadata = state["conversation"].metadata
-                state["conversation"].metadata["destination"] = info.get("destination")
-                print("destination is ", info.get("destination"))
-                state["conversation"].metadata["check_in_date"] = info.get("check_in_date")
-                state["conversation"].metadata["guest_name"] = info.get("guest_name")
-                print("meta data is ", state["conversation"].metadata)
+                print("metadata", self.metadata)
+                if not self.metadata.get("check_in_date"):
+                    self.metadata["check_in_date"] = info.get("check_in_date")
+                if not self.metadata.get("guest_name"):
+                    self.metadata["guest_name"] = info.get("guest_name")
+                else:
+                    print("the guest name is ", self.metadata["guest_name"])
+                if not self.metadata.get("destination"):
+                    self.metadata["destination"] = info.get("destination")
+                    print("add destination")
                 # 如果用户消息中提取到了酒店电话，直接写入 hotel_info 里
                 if info.get("hotel_tel"):
                     state["hotel_info"] = {"tel": info.get("hotel_tel")}
-            except Exception:
-                print("exception", Exception)
+                print("IM STILL THERE")
+            except Exception as e:
+                print("exception", str(e))
                 pass
             return state
         except Exception as e:
@@ -340,7 +345,7 @@ class ReasoningGraph:
     async def _analyze_booking_request(self, state: ReasoningState) -> ReasoningState:
         print("analyze booking request")
         try:
-            metadata = state["conversation"].metadata or {}
+            metadata = self.metadata or {}
             check_fields = ["hotel_name", "destination", "check_in_date", "hotel_info"]
             complete = all(metadata.get(field) or state.get(field) for field in check_fields)
             state["booking_info_complete"] = complete
@@ -352,7 +357,7 @@ class ReasoningGraph:
     async def _analyze_refund_request(self, state: ReasoningState) -> ReasoningState:
         print("analyze refund request")
         try:
-            metadata = state["conversation"].metadata or {}
+            metadata = self.metadata or {}
             hotel_info = state.get("hotel_info") or metadata.get("hotel_info")
             check_tel = hotel_info and hotel_info.get("tel")
             complete = (state.get("hotel_name") or metadata.get("hotel_name")) and \
@@ -365,10 +370,66 @@ class ReasoningGraph:
             state["error"] = f"analyze_refund_request_error: {str(e)}"
             return state
 
+    async def _finalize_conversation(self, state: ReasoningState) -> ReasoningState:
+        print("finalize conversation")
+        metadata = self.metadata
+        try:
+            flow_type = state.get("flow_type", "预订/退款")
+            end_prompt = (
+                f"你是酒店客服助手。\n"
+                f"用户已经完整提供了{flow_type}所需的信息。\n"
+                f"请生成一句礼貌、自然、专业的结束语，告诉用户我们正在为他处理。"
+            )
+            result = await self.qwen_service.analyze_text(end_prompt)
+            end_message = result.get("raw_response", "感谢您的信息，我们正在为您处理。")
+
+            state["response"] = end_message
+            state["metadata_result"] = self.metadata  # 把收集到的所有信息返回
+            # ✅ 如果是退款，再生成正式的 "向第三方平台申请退款" 文本
+            refund_prompt_text = (
+                f"你是客户服务专员，需要代替用户向第三方平台客服人员发起退款请求，请根据以下信息生成一封正式、完整的沟通文本：\n\n"
+                f"酒店名称: {metadata.get('hotel_name', '未知酒店')}\n"
+                f"入住日期: {metadata.get('check_in_date', '未知日期')}\n"
+                f"客人姓名: {metadata.get('guest_name', '未知姓名')}\n\n"
+                "要求：\n"
+                "- 开场白，称呼对方客服人员\n"
+                "- 简要说明用户因个人原因或不可抗力原因希望取消订单并申请退款\n"
+                "- 核心正文需要表达清楚退款请求，并附上关键信息（如酒店名称、入住日期、客人姓名）\n"
+                "- 语气正式、礼貌、专业，体现对平台服务的理解与感谢\n"
+                "- 结尾希望对方审核处理，并表达感谢\n"
+                "- 请生成完整的中文沟通内容（包括称呼、正文、结束语），不要只给出正文，不要添加解释说明。"
+            )
+
+            try:
+                self.metadata["refund_prompt"] = refund_prompt_text
+                print("✅ 退款申请正文生成完成！")
+            except Exception as e:
+                print(f"❌ 退款申请生成失败: {str(e)}")
+                self.metadata["refund_prompt"] = "退款申请生成失败"
+
+
+            return state
+
+        except Exception as e:
+            state["error"] = f"finalize_conversation_error: {str(e)}"
+            return state
+
+    async def _build_missing_info_prompt(self, missing_fields: list, intent: str) -> str:
+        """根据缺失字段构建自然客服用语prompt"""
+        fields_text = "、".join(missing_fields)
+        prompt = (
+            f"你是一个酒店客服，请用礼貌而自然的中文，向用户确认以下缺失的信息：{fields_text}。\n"
+            f"用户当前意图是：{intent}。\n"
+            f"请帮我生成一段友好、简洁的客服回复，不要直接列出字段，要自然引导用户补充这些信息。"
+        )
+        result = await self.qwen_service.analyze_text("", prompt)
+        return result
+
     async def _generate_response(self, state: ReasoningState) -> ReasoningState:
         print("generate response")
         try:
-            metadata = state["conversation"].metadata or {}
+            metadata = self.metadata or {}
+
             response_parts = []
 
             if state.get("error"):
@@ -383,6 +444,8 @@ class ReasoningGraph:
                     missing.append("目的地")
                 if not metadata.get("check_in_date"):
                     missing.append("入住日期")
+                if not metadata.get("guest_name"):
+                    missing.append("客人姓名")
                 if not (metadata.get("hotel_info") or state.get("hotel_info")):
                     missing.append("酒店信息")
                 if missing:
@@ -390,6 +453,7 @@ class ReasoningGraph:
                     for field in missing:
                         response_parts.append(f"- {field}")
                     state["response"] = "\n".join(response_parts)
+                    # state["response"] = await self._build_missing_info_prompt(missing, "订购酒店")
                     return state
                 else:
                     state["response"] = "好的，您提供的信息已齐全，正在为您查询可预订酒店。"
@@ -402,21 +466,24 @@ class ReasoningGraph:
                 if not metadata.get("check_in_date"):
                     missing.append("入住日期")
                 if not metadata.get("guest_name"):
-                    missing.append("入住人姓名")
+                    missing.append("退款人姓名")
                 hotel_info = state.get("hotel_info") or metadata.get("hotel_info")
                 if not hotel_info or not hotel_info.get("tel"):
                     missing.append("酒店电话")
                 if missing:
                     response_parts.append("为了帮您处理退款，请提供以下信息：")
+
                     for field in missing:
                         response_parts.append(f"- {field}")
                     state["response"] = "\n".join(response_parts)
+                    # state["response"] = self._build_missing_info_prompt(missing, "退款处理")
                     return state
                 else:
                     state["response"] = "好的，您提供的退款信息已齐全，正在为您确认退订政策。"
                     return state
 
             state["response"] = "抱歉，我没能理解您的请求，请您详细描述。"
+
             return state
 
         except Exception as e:
@@ -427,13 +494,14 @@ class ReasoningGraph:
     async def _check_goal(self, state: ReasoningState) -> ReasoningState:
         print("check goal")
         try:
-            metadata = state["conversation"].metadata or {}
+            metadata = self.metadata or {}
 
             if state.get("flow_type") == "booking":
                 if (metadata.get("hotel_name") or state.get("hotel_name")) and \
                    metadata.get("destination") and metadata.get("check_in_date") and \
                    (metadata.get("hotel_info") or state.get("hotel_info")):
                     state["goal_achieved"] = True
+                    print("goal achieved")
                 else:
 
                     state["need_generate_response"] = True
@@ -480,7 +548,9 @@ class ReasoningGraph:
         try:
             # 运行推理图
             final_state = await self.graph.ainvoke(initial_state)
-
+            for key, value in self.metadata.items():
+                if value is not None:
+                    conversation.metadata[key] = value
             # 检查是否有错误
             if final_state.get("error"):
                 return f"抱歉，处理您的请求时遇到了问题: {final_state['error']}"
