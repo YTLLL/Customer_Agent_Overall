@@ -1,0 +1,12 @@
+.header {
+    background-color: transparent;
+  }
+  
+  .app-title {
+    flex-grow: 1;
+  }
+  
+  .header-icons {
+    display: flex;
+    gap: 8px;
+  }

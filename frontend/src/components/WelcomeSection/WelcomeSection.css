@@ -1,0 +1,19 @@
+.welcome-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 2rem;
+  }
+  
+  .headset-avatar {
+    width: 80px !important;
+    height: 80px !important;
+    background-color: #00e676 !important;
+    margin-bottom: 1.5rem;
+  }
+  
+  .welcome-text {
+    color: white;
+    font-weight: 400;
+  }

@@ -1,0 +1,26 @@
+.buttons-container {
+    display: flex;
+    flex-direction: row;
+    gap: 16px;
+    width: 100%;
+    max-width: 600px;
+    padding: 0 16px;
+    justify-content: center;
+  }
+  
+  .operation-button {
+    padding: 10px 20px !important;
+    border-radius: 28px !important;
+    background-color: white !important;
+    color: #333 !important;
+    text-transform: none !important;
+    min-width: 180px !important;
+  }
+  
+  /* Make buttons stack on small screens */
+  @media (max-width: 600px) {
+    .buttons-container {
+      flex-direction: column;
+      align-items: center;
+    }
+  }

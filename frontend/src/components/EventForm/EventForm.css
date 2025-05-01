@@ -1,0 +1,53 @@
+.form-field {
+    margin-bottom: 16px;
+  }
+  
+  .field-label {
+    display: block;
+    margin-bottom: 8px;
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 0.75rem;
+  }
+  
+  .phone-input-container {
+    display: flex;
+    gap: 8px;
+  }
+  
+  .country-code-select {
+    min-width: 120px;
+  }
+  
+  .phone-number-input {
+    flex: 1;
+  }
+  
+  /* Custom styling for dropdown */
+  .MuiSelect-select {
+    display: flex;
+    align-items: center;
+  }
+  
+  .country-flag {
+    margin-right: 8px;
+  }
+  
+  /* For checkbox alignment */
+  .confirm-checkbox {
+    align-items: flex-start;
+  }
+  
+  .confirm-checkbox .MuiFormControlLabel-label {
+    margin-top: 2px;
+  }
+  
+  /* Make form responsive */
+  @media (max-width: 600px) {
+    .phone-input-container {
+      flex-direction: column;
+    }
+    
+    .country-code-select {
+      width: 100%;
+    }
+  }
